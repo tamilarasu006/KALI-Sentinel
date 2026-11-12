@@ -73,3 +73,25 @@ def test_agent_workflow_blocks_malicious_intent():
     assert resp.guardrail_decision.verdict == GuardrailVerdict.REJECT
     assert resp.execution_status == "BLOCKED"
     assert "malicious" in resp.guardrail_decision.reasoning.lower()
+
+
+def test_agent_factual_direct_answer():
+    agent = KaliSentinelAgent(SentinelConfig(bedrock_mock_fallback=True, strands_mock_fallback=True))
+    resp = agent.run("Who is the CEO of Google?")
+
+    assert resp.selected_tool == "no_tool"
+    assert "Sundar Pichai" in resp.explanation
+    # Must answer directly without generic cybersecurity boilerplate
+    assert "port scanner" not in resp.explanation.lower()
+    assert "harden attack surfaces" not in resp.explanation.lower()
+
+
+def test_agent_programming_specific_solution():
+    agent = KaliSentinelAgent(SentinelConfig(bedrock_mock_fallback=True, strands_mock_fallback=True))
+    resp = agent.run("Write a Python program to find the largest number in a list.")
+
+    assert resp.selected_tool == "no_tool"
+    assert "find_largest_number" in resp.explanation or "largest" in resp.explanation
+    # Must solve the exact problem and NOT generate a port scanner or socket code
+    assert "probe_port" not in resp.explanation.lower()
+    assert "socket" not in resp.explanation.lower()

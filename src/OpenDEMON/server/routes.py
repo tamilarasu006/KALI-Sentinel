@@ -47,32 +47,21 @@ def _to_messages(chat_messages) -> list[Message]:
     return messages
 
 
-def _ensure_identity_prompt(messages: list[Message], app_config) -> list[Message]:
-    """Prepend DEMON's identity system prompt when the client omits one.
+def _ensure_identity_prompt(messages: list[Message], app_config, model: str = "") -> list[Message]:
+    """Prepend identity system prompt when the client omits one.
 
-    The desktop UI's chat backend posts only user/assistant turns to
-    ``/v1/chat/completions`` (see ``frontend/.../Chat/InputArea.tsx``), so
-    nothing grounds the model's identity. Without a system prompt the model
-    answers from its training identity (e.g. "I'm Claude", "I am Qwen"),
-    which is what #540 reported. The CLI paths inject this via
-    ``SystemPromptBuilder`` / ``BaseAgent``; the engine-direct server paths
-    did not. This mirrors the agent fallback in ``agents/_stubs.py``.
-
-    If any message already carries a system role, the caller has supplied
-    their own grounding and we leave the list untouched (no double-prompting).
-
-    Resolution of the identity text: ``app_config.agent.default_system_prompt``
-    when a config is wired onto ``app.state``; otherwise fall back to
-    ``load_config()``. Config resolution is wrapped so a broken/missing
-    config degrades to "no injection" rather than crashing the endpoint, but
-    the failure is logged (per REVIEW.md — never silently swallow).
+    When targeting KALI Sentinel, injects KALI_SENTINEL_SYSTEM_PROMPT.
+    For standard DEMON desktop agents, injects app_config.agent.default_system_prompt.
     """
     if any(m.role == Role.SYSTEM for m in messages):
         return messages
 
     prompt = ""
     try:
-        if app_config is not None:
+        if model and model.lower().startswith("kali"):
+            from kali_sentinel.prompts import KALI_SENTINEL_SYSTEM_PROMPT
+            prompt = KALI_SENTINEL_SYSTEM_PROMPT
+        elif app_config is not None:
             prompt = app_config.agent.default_system_prompt or ""
         else:
             from OpenDEMON.core.config import load_config
@@ -92,17 +81,20 @@ def _ensure_identity_prompt(messages: list[Message], app_config) -> list[Message
     return [Message(role=Role.SYSTEM, content=prompt), *messages]
 
 
+@router.post("/chat")
+@router.post("/v1/chat")
+@router.post("/chat/completions")
 @router.post("/v1/chat/completions")
 @user_limiter.limit(lambda: load_config().server.ratelimit_auth)
 async def chat_completions(request_body: ChatCompletionRequest, request: Request):
     """Handle chat completion requests (streaming and non-streaming)."""
     
     # --- KALI Interceptor ---
-    # Only route to KALI when the requested model is a kali-* model.
-    # Requests for cloud/Ollama models fall through to the existing pipeline.
+    # Route to KALI when the requested model is a kali-* model or active engine is kali_sentinel
     kali_orchestrator = getattr(request.app.state, "kali_orchestrator", None)
-    _model_for_kali = request_body.model or ""
-    if kali_orchestrator is not None and _model_for_kali.lower().startswith("kali"):
+    _model_for_kali = request_body.model or getattr(request.app.state, "model", "") or ""
+    _is_sentinel = getattr(request.app.state, "engine_name", "") == "kali_sentinel"
+    if kali_orchestrator is not None and (_model_for_kali.lower().startswith("kali") or _is_sentinel):
         try:
             query_text = ""
             for m in reversed(request_body.messages):

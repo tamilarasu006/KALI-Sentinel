@@ -59,8 +59,19 @@ class KALIEngine(InferenceEngine):
             )
 
     def _format_messages(self, messages: Sequence[Message]) -> str:
-        """Flatten a sequence of Messages into a raw prompt string."""
+        """Flatten a sequence of Messages into a raw prompt string with KALI Sentinel grounding."""
+        has_system = any(
+            getattr(getattr(msg, "role", None), "value", str(getattr(msg, "role", ""))) == "system"
+            for msg in messages
+        )
         prompt = ""
+        if not has_system:
+            try:
+                from kali_sentinel.prompts import KALI_SENTINEL_SYSTEM_PROMPT
+                prompt += f"<system>\n{KALI_SENTINEL_SYSTEM_PROMPT}\n</system>\n"
+            except Exception:
+                pass
+
         for msg in messages:
             role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
             prompt += f"<{role}>\n{msg.content}\n</{role}>\n"
@@ -128,7 +139,27 @@ class KALIEngine(InferenceEngine):
         except Exception as exc:
             logger.debug("KALIEngine live API call skipped: %s", exc)
 
-        # 2. Local Model Fallback
+        # 3. KALI Intelligence Core (Astra-6 / Bedrock reasoning engine)
+        try:
+            from kali_sentinel.agent.bedrock import get_bedrock_adapter
+            intelligent_reply = get_bedrock_adapter()._generate_astra6_response(user_prompt)
+            if intelligent_reply and len(intelligent_reply.strip()) > 10:
+                prompt_tokens = estimate_prompt_tokens(messages)
+                completion_tokens = max(1, len(intelligent_reply) // 4)
+                return {
+                    "content": intelligent_reply,
+                    "model": model,
+                    "usage": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": prompt_tokens + completion_tokens,
+                    },
+                    "finish_reason": "stop",
+                }
+        except Exception as exc:
+            logger.debug("KALIEngine intelligent fallback skipped: %s", exc)
+
+        # 4. Local Model Fallback
         kali_model = self._registry.get_model(model)
 
         if not kali_model.health():
@@ -219,7 +250,22 @@ class KALIEngine(InferenceEngine):
         except Exception as exc:
             logger.debug("KALIEngine live stream skipped: %s", exc)
 
-        # 2. Local Model Fallback
+        # 3. KALI Intelligence Core (Astra-6 / Bedrock reasoning engine)
+        try:
+            import asyncio
+            from kali_sentinel.agent.bedrock import get_bedrock_adapter
+            intelligent_reply = get_bedrock_adapter()._generate_astra6_response(user_prompt)
+            if intelligent_reply and len(intelligent_reply.strip()) > 10:
+                words = intelligent_reply.split(" ")
+                for i, w in enumerate(words):
+                    suffix = " " if i < len(words) - 1 else ""
+                    yield w + suffix
+                    await asyncio.sleep(0.01)
+                return
+        except Exception as exc:
+            logger.debug("KALIEngine intelligent stream fallback skipped: %s", exc)
+
+        # 4. Local Model Fallback
         kali_model = self._registry.get_model(model)
 
         if not kali_model.health():

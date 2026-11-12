@@ -371,12 +371,16 @@ def create_sentinel_app():
                 await asyncio.sleep(0.01)
 
         def list_models(self) -> List[str]:
-            return [
+            custom_model = get_sentinel_config().kali_model_name
+            models = [
                 "kali-sentinel-v1",
                 "kali",
                 "StrandsAgents/strands-decider-2B-hobson-v21",
                 "anthropic.claude-3-haiku-20240307-v1:0",
             ]
+            if custom_model and custom_model not in models:
+                models.insert(0, custom_model)
+            return models
 
         def health(self) -> bool:
             return True
